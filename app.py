@@ -284,6 +284,7 @@ def build_contents(query: str, context: str, history: list, no_context: bool = F
 # ── 스트리밍 답변 생성 ────────────────────────────────────────────
 def stream_and_render(query: str, engine: SamsungSVCSearchEngine, history: list):
     """검색 → 스트리밍 렌더링. 완료된 전체 텍스트와 출처를 반환."""
+    import html as _html
     from google.genai import types
 
     client = get_gemini_model()
@@ -297,17 +298,38 @@ def stream_and_render(query: str, engine: SamsungSVCSearchEngine, history: list)
         contents = build_contents(query, "", history, no_context=True)
     else:
         contents = build_contents(query, context, history)
+
     full_text = ""
     placeholder = st.empty()
 
+    # ✅ API 응답 대기 중 즉시 "생각 중" 커서 표시 → 빈 화면 느낌 제거
+    placeholder.markdown(
+        '<div class="bot-message"><div class="streaming-bubble">'
+        '<span class="cursor">▌</span></div></div>',
+        unsafe_allow_html=True,
+    )
+
+    def _render_streaming(text: str, final: bool = False):
+        """스트리밍 중: plain text 표시 (markdown 변환 없음 → O(1) 비용).
+        최종 렌더링은 st.rerun() 이후 render_message()가 담당하므로
+        여기서는 속도만 최우선으로 처리한다."""
+        escaped = _html.escape(text).replace("\n", "<br>")
+        cursor = "" if final else '<span class="cursor">▌</span>'
+        placeholder.markdown(
+            f'<div class="bot-message"><div class="streaming-bubble">'
+            f'{escaped}{cursor}</div></div>',
+            unsafe_allow_html=True,
+        )
+
     try:
         stream = client.models.generate_content_stream(
-            model="gemini-2.5-flash-lite",
+            model="gemini-3.1-flash-lite",
             contents=contents,
             config=types.GenerateContentConfig(
                 system_instruction=SYSTEM_PROMPT,
                 temperature=0.4,
                 max_output_tokens=900,
+                thinking_config=types.ThinkingConfig(thinking_budget=0),  # Thinking 비활성화 → 속도 유지
             ),
         )
         buf = ""
@@ -315,26 +337,20 @@ def stream_and_render(query: str, engine: SamsungSVCSearchEngine, history: list)
             if chunk.text:
                 full_text += chunk.text
                 buf += chunk.text
-                # 40자 모일 때마다 한 번만 렌더링 (매 청크마다 X)
-                if len(buf) >= 40:
-                    html = md_lib.markdown(full_text, extensions=["nl2br", "tables"])
-                    placeholder.markdown(
-                        f'<div class="bot-message"><div class="streaming-bubble">'
-                        f'{html}<span class="cursor">▌</span></div></div>',
-                        unsafe_allow_html=True,
-                    )
+                # ✅ 버퍼 40자 → 12자: 첫 글자가 훨씬 빨리 화면에 뜸
+                # ✅ 스트리밍 중 markdown 변환 제거: 텍스트가 길어져도 비용 일정
+                if len(buf) >= 12:
+                    _render_streaming(full_text)
                     buf = ""
-        # 남은 버퍼 최종 렌더링
-        if buf:
-            html = md_lib.markdown(full_text, extensions=["nl2br", "tables"])
-            placeholder.markdown(
-                f'<div class="bot-message"><div class="streaming-bubble">'
-                f'{html}<span class="cursor">▌</span></div></div>',
-                unsafe_allow_html=True,
-            )
+
+        # 남은 버퍼 최종 flush
+        if buf or full_text:
+            _render_streaming(full_text, final=True)
+
     except Exception as e:
         full_text = f"오류가 발생했습니다: {e}"
 
+    # placeholder 제거 → st.rerun() 후 render_message()가 마크다운 완성본 표시
     placeholder.empty()
     return full_text, sources
 
@@ -463,7 +479,12 @@ def main():
         pass
 
     mtime = os.path.getmtime("data/solutions.json")
-    with st.spinner("검색 엔진 로딩 중..."):
+    # ✅ 첫 로딩 때만 스피너 표시, 이후 rerun 시 깜빡임 제거
+    if "engine_ready" not in st.session_state:
+        with st.spinner("검색 엔진 로딩 중..."):
+            engine = load_engine(_version=mtime)
+        st.session_state.engine_ready = True
+    else:
         engine = load_engine(_version=mtime)
 
     render_sidebar()
