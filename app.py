@@ -427,12 +427,12 @@ def render_welcome():
 
 # ── 스크롤 ────────────────────────────────────────────────────────
 def scroll_to_answer():
-    import streamlit.components.v1 as components
-    components.html("""
+    # st.components.v1.html → st.html 로 교체 (2026-06-01 이후 제거 예정)
+    st.html("""
     <script>
     (function(){
         function go(){
-            var doc = window.parent.document;
+            var doc = window.parent ? window.parent.document : document;
             var el = doc.getElementById('last-answer');
             if(el){ el.scrollIntoView({behavior:'smooth',block:'start'}); return; }
             var msgs = doc.querySelectorAll('.bot-message');
@@ -441,7 +441,7 @@ def scroll_to_answer():
         setTimeout(go,100); setTimeout(go,500);
     })();
     </script>
-    """, height=0)
+    """)
 
 
 # ── 사이드바 ──────────────────────────────────────────────────────
